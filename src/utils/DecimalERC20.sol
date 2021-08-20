@@ -49,6 +49,7 @@ abstract contract DecimalERC20 {
         uint256 roundedDownValue = _toUint(_token, _value);
 
         // solhint-disable avoid-low-level-calls
+        // TODO 太花里胡哨了，为什么要调用 call 呢？ 选择 transferFrom ABI，干嘛不直接 transferFrom ，后续需要研究一下 gas 消耗
         (bool success, bytes memory data) =
             address(_token).call(abi.encodeWithSelector(_token.transferFrom.selector, _from, _to, roundedDownValue));
 

@@ -120,9 +120,10 @@ contract Amm is IAmm, PerpFiOwnableUpgrade, BlockContext {
     // init cumulativePositionMultiplier is 1, will be updated every time when amm reserve increase/decrease
     Decimal.decimal private cumulativePositionMultiplier;
 
-    // snapshot of amm reserve when change liquidity's invariant
+    // snapshot of amm reserve when change liquidity's invariant 当 K 值变换时候，保存快照
     LiquidityChangedSnapshot[] private liquidityChangedSnapshots;
 
+    // 1 小时计算一次 时间加权平均价格
     uint256 public spotPriceTwapInterval;
     uint256 public fundingPeriod;
     uint256 public fundingBufferPeriod;
@@ -215,6 +216,7 @@ contract Amm is IAmm, PerpFiOwnableUpgrade, BlockContext {
             return Decimal.zero();
         }
         if (_dirOfQuote == Dir.REMOVE_FROM_AMM) {
+            // 价格的滑点需要小于 tradeLimitRatio（合约部署时候设置的）
             require(
                 quoteAssetReserve.mulD(tradeLimitRatio).toUint() >= _quoteAssetAmount.toUint(),
                 "over trading limit"
@@ -225,6 +227,8 @@ contract Amm is IAmm, PerpFiOwnableUpgrade, BlockContext {
         // If LONG, exchanged base amount should be more than _baseAssetAmountLimit,
         // otherwise(SHORT), exchanged base amount should be less than _baseAssetAmountLimit.
         // In SHORT case, more position means more debt so should not be larger than _baseAssetAmountLimit
+        // 此处为了限制 杠杆倍数。
+        // 举例说明，做多，投入 quote，换 base，如果换出的 base 越少，说明价格越高，风险越大
         if (_baseAssetAmountLimit.toUint() != 0) {
             if (_dirOfQuote == Dir.ADD_TO_AMM) {
                 require(baseAssetAmount.toUint() >= _baseAssetAmountLimit.toUint(), "Less than minimal base token");
@@ -265,6 +269,7 @@ contract Amm is IAmm, PerpFiOwnableUpgrade, BlockContext {
         // premium = twapMarketPrice - twapIndexPrice
         // timeFraction = fundingPeriod(1 hour) / 1 day
         // premiumFraction = premium * timeFraction
+        // underlyingPrice 标的价格
         Decimal.decimal memory underlyingPrice = getUnderlyingTwapPrice(spotPriceTwapInterval);
         SignedDecimal.signedDecimal memory premium =
             MixedDecimal.fromDecimal(getTwapPrice(spotPriceTwapInterval)).subD(underlyingPrice);
@@ -277,6 +282,7 @@ contract Amm is IAmm, PerpFiOwnableUpgrade, BlockContext {
         uint256 minNextValidFundingTime = _blockTimestamp().add(fundingBufferPeriod);
 
         // floor((nextFundingTime + fundingPeriod) / 3600) * 3600
+        // 一小时支付一次资金费率
         uint256 nextFundingTimeOnHourStart = nextFundingTime.add(fundingPeriod).div(1 hours).mul(1 hours);
 
         // max(nextFundingTimeOnHourStart, minNextValidFundingTime)
@@ -639,6 +645,7 @@ contract Amm is IAmm, PerpFiOwnableUpgrade, BlockContext {
      *   ＲＥＭＯＶＥ  (amount + 1)              (amount + 1)      ＡＤＤ
      **/
 
+    // getInputPriceWithReserves 计算出可以换取出多少 base，quote 目前只以 usdc 计算，换言之，以 quote 本位计算，所有的出入金和仓位本位都是 quote，那么计算 base 仓位大小就是计算 quote 变换
     function getInputPriceWithReserves(
         Dir _dirOfQuote,
         Decimal.decimal memory _quoteAssetAmount,
@@ -649,21 +656,21 @@ contract Amm is IAmm, PerpFiOwnableUpgrade, BlockContext {
             return Decimal.zero();
         }
 
-        bool isAddToAmm = _dirOfQuote == Dir.ADD_TO_AMM;
+        bool isAddToAmm = _dirOfQuote == Dir.ADD_TO_AMM; // true 做多， false 做空
         SignedDecimal.signedDecimal memory invariant =
-            MixedDecimal.fromDecimal(_quoteAssetPoolAmount.mulD(_baseAssetPoolAmount));
+            MixedDecimal.fromDecimal(_quoteAssetPoolAmount.mulD(_baseAssetPoolAmount)); // base * quote = k 计算 K 值
         SignedDecimal.signedDecimal memory baseAssetAfter;
         Decimal.decimal memory quoteAssetAfter;
         Decimal.decimal memory baseAssetBought;
         if (isAddToAmm) {
-            quoteAssetAfter = _quoteAssetPoolAmount.addD(_quoteAssetAmount);
+            quoteAssetAfter = _quoteAssetPoolAmount.addD(_quoteAssetAmount); // 做多 quote 增加，以 quote 换取 base
         } else {
-            quoteAssetAfter = _quoteAssetPoolAmount.subD(_quoteAssetAmount);
+            quoteAssetAfter = _quoteAssetPoolAmount.subD(_quoteAssetAmount); // 做空 quote 减少，以 base 换取 quote
         }
         require(quoteAssetAfter.toUint() != 0, "quote asset after is 0");
 
         baseAssetAfter = invariant.divD(quoteAssetAfter);
-        baseAssetBought = baseAssetAfter.subD(_baseAssetPoolAmount).abs();
+        baseAssetBought = baseAssetAfter.subD(_baseAssetPoolAmount).abs(); // 计算 base 仓位大小，之后的减去之前的 绝对值
 
         // if the amount is not dividable, return 1 wei less for trader
         if (invariant.abs().modD(quoteAssetAfter).toUint() != 0) {

@@ -15,6 +15,7 @@ interface IAmm {
     enum Dir { ADD_TO_AMM, REMOVE_FROM_AMM }
 
     struct LiquidityChangedSnapshot {
+        // Notional 原生价值（面值），通常是期货或期权合同中特定的以美元表示的金融产品或商品的价值
         SignedDecimal.signedDecimal cumulativeNotional;
         // the base/quote reserve of amm right before liquidity changed
         Decimal.decimal quoteAssetReserve;

@@ -20,6 +20,7 @@ import { IMultiTokenRewardRecipient } from "./interface/IMultiTokenRewardRecipie
 
 // note BaseRelayRecipient must come after OwnerPausableUpgradeSafe so its _msgSender() takes precedence
 // (yes, the ordering is reversed comparing to Python)
+// ClearingHouse 会做些什么？ 1、保存仓位信息
 contract ClearingHouse is
     DecimalERC20,
     OwnerPausableUpgradeSafe,
@@ -151,6 +152,7 @@ contract ClearingHouse is
         // This design is to prevent the attacker being benefited from the multiple action in one block
         // in extreme cases
         uint256 lastRestrictionBlock;
+        // 这个是累计资金费率，例如第 1 小时 0.8，第二小时 1 , 那么记录的数据是 0.8, 1.8  最后结算时用最后一个数字 * 持仓时间即可知道
         SignedDecimal.signedDecimal[] cumulativePremiumFractions;
         mapping(address => Position) positionMap;
     }
@@ -160,13 +162,13 @@ contract ClearingHouse is
     //**********************************************************//
     string public override versionRecipient;
 
-    // only admin
+    // only admin     初始保证金率
     Decimal.decimal public initMarginRatio;
 
-    // only admin
+    // only admin    维持保证金率
     Decimal.decimal public maintenanceMarginRatio;
 
-    // only admin
+    // only admin     清算费率
     Decimal.decimal public liquidationFeeRatio;
 
     // key by amm address. will be deprecated or replaced after guarded period.
@@ -177,13 +179,16 @@ contract ClearingHouse is
     mapping(address => AmmMap) internal ammMap;
 
     // prepaid bad debt balance, key by ERC20 token address
+    // 风险准备金，当用户取出的钱 > 合约余额时，说明产生了坏账，按理说是由保险基金维护的
     mapping(address => Decimal.decimal) internal prepaidBadDebt;
 
-    // contract dependencies
+    // contract dependencies 保险基金， 50% 的交易手续费流入保险基金
     IInsuranceFund public insuranceFund;
+    // staking pool 剩下的 50% 交易手续费流入此处，抵押的分红来源
     IMultiTokenRewardRecipient public feePool;
 
     // designed for arbitragers who can hold unlimited positions. will be removed after guarded period
+    // 我靠，还有无限头寸的狗大户！！！（据说后期才移除）
     address internal whitelist;
 
     uint256[50] private __gap;
@@ -272,7 +277,7 @@ contract ClearingHouse is
     }
 
     /**
-     * @notice add margin to increase margin ratio
+     * @notice add margin to increase margin ratio 追加保证金
      * @param _amm IAmm address
      * @param _addedMargin added margin in 18 digits
      */
@@ -311,17 +316,17 @@ contract ClearingHouse is
             SignedDecimal.signedDecimal memory latestCumulativePremiumFraction
         ) = calcRemainMarginWithFundingPayment(_amm, position, marginDelta);
         require(badDebt.toUint() == 0, "margin is not enough");
-        position.margin = remainMargin;
+        position.margin = remainMargin; // 仓位剩余保证金
         position.lastUpdatedCumulativePremiumFraction = latestCumulativePremiumFraction;
         setPosition(_amm, trader, position);
-        // check margin ratio
+        // check margin ratio 保证金率 > initMarginRatio. true 要求代表大于，
         requireMoreMarginRatio(getMarginRatio(_amm, trader), initMarginRatio, true);
         // transfer token back to trader
         withdraw(_amm.quoteAsset(), trader, _removedMargin);
         emit MarginChanged(trader, address(_amm), marginDelta.toInt(), fundingPayment.toInt());
     }
 
-    /**
+    /** 结算所有的仓位，为何是 _msgSender， 难道只有调用方才能结算自己的仓位？
      * @notice settle all the positions when amm is shutdown. The settlement price is according to IAmm.settlementPrice
      * @param _amm IAmm address
      */
@@ -334,7 +339,7 @@ contract ClearingHouse is
         // update position
         clearPosition(_amm, trader);
         // calculate settledValue
-        // If Settlement Price = 0, everyone takes back her collateral.
+        // If Settlement Price = 0, everyone takes back her collateral. （结算价 - 开仓价）* 仓位数量 + 保证金
         // else Returned Fund = Position Size * (Settlement Price - Open Price) + Collateral
         Decimal.decimal memory settlementPrice = _amm.getSettlementPrice();
         Decimal.decimal memory settledValue;
@@ -365,7 +370,7 @@ contract ClearingHouse is
     //   marginToVault = addMargin
     //   marginDiff = realizedFundingPayment + realizedPnl(0)
     //   pos.margin += marginToVault + marginDiff
-    //   vault.margin += marginToVault + marginDiff
+    //   vault.margin += marginToVault + marginDiff 合约资金池增加了（保证金 + 资金费 + 已实现盈亏）
     //   required(enoughMarginRatio)
     // else if reduce position()
     //   marginToVault = 0
@@ -422,6 +427,8 @@ contract ClearingHouse is
      * @param _leverage leverage  in 18 digits. Can Not be 0
      * @param _baseAssetAmountLimit minimum base asset amount expected to get to prevent from slippage.
      */
+    /*  开仓业务流，需要 VAMM 合约计算可置换仓位，开仓方向：BUY/Sell 数量 杠杆
+     */
     function openPosition(
         IAmm _amm,
         Side _side,
@@ -429,7 +436,7 @@ contract ClearingHouse is
         Decimal.decimal memory _leverage,
         Decimal.decimal memory _baseAssetAmountLimit
     ) public whenNotPaused() nonReentrant() {
-        requireAmm(_amm, true);
+        requireAmm(_amm, true); // 判断 AMM 合约地址是否存在（有一个 map 记录），已经是否可以work
         requireNonZeroInput(_quoteAssetAmount);
         requireNonZeroInput(_leverage);
         requireMoreMarginRatio(MixedDecimal.fromDecimal(Decimal.one()).divD(_leverage), initMarginRatio, true);
@@ -452,6 +459,7 @@ contract ClearingHouse is
                     _leverage
                 );
             } else {
+                // 之前持有仓位 并且 需要卖出仓位
                 positionResp = openReversePosition(
                     _amm,
                     _side,
@@ -725,13 +733,14 @@ contract ClearingHouse is
         );
     }
 
-    /**
+    /** 缴纳资金费率，使得 future 价格收敛于 spot 价格
      * @notice if funding rate is positive, traders with long position pay traders with short position and vice versa.
      * @param _amm IAmm address
      */
     function payFunding(IAmm _amm) external {
         requireAmm(_amm, true);
 
+        // 获取资金费率
         SignedDecimal.signedDecimal memory premiumFraction = _amm.settleFunding();
         ammMap[address(_amm)].cumulativePremiumFractions.push(
             premiumFraction.addD(getLatestCumulativePremiumFraction(_amm))
@@ -742,13 +751,16 @@ contract ClearingHouse is
         // if premiumFraction is positive: long pay short, amm get positive funding payment
         // if premiumFraction is negative: short pay long, amm get negative funding payment
         // if totalPositionSize.side * premiumFraction > 0, funding payment is positive which means profit
+        // 计算全部仓位的资金费率
         SignedDecimal.signedDecimal memory totalTraderPositionSize = _amm.getBaseAssetDelta();
         SignedDecimal.signedDecimal memory ammFundingPaymentProfit = premiumFraction.mulD(totalTraderPositionSize);
 
         IERC20 quoteAsset = _amm.quoteAsset();
         if (ammFundingPaymentProfit.toInt() < 0) {
+            // 整个系统需要支付额外的资金费，举例，市场上涨，用户都持有多仓，系统出钱
             insuranceFund.withdraw(quoteAsset, ammFundingPaymentProfit.abs());
         } else {
+            // 反之系统收钱
             transferToInsuranceFund(quoteAsset, ammFundingPaymentProfit.abs());
         }
     }
@@ -765,7 +777,7 @@ contract ClearingHouse is
     // VIEW FUNCTIONS
     //
 
-    /**
+    /** 保证金率 =  保证金 + 资金费 + 未实现盈亏 / 仓位价值
      * @notice get margin ratio, marginRatio = (margin + funding payment + unrealized Pnl) / positionNotional
      * use spot and twap price to calculate unrealized Pnl, final unrealized Pnl depends on which one is higher
      * @param _amm IAmm address
@@ -827,7 +839,7 @@ contract ClearingHouse is
     }
 
     /**
-     * @notice get position notional and unrealized Pnl without fee expense and funding payment
+     * @notice get position notional and unrealized Pnl（profit and loss） without fee expense and funding payment 换言之，计算仓位价值和未实现盈亏
      * @param _amm IAmm address
      * @param _trader trader address
      * @param _pnlCalcOption enum PnlCalcOption, SPOT_PRICE for spot price and TWAP for twap price
@@ -842,9 +854,11 @@ contract ClearingHouse is
         Position memory position = getPosition(_amm, _trader);
         Decimal.decimal memory positionSizeAbs = position.size.abs();
         if (positionSizeAbs.toUint() != 0) {
-            bool isShortPosition = position.size.toInt() < 0;
+            // 仓位价值 = 仓位数量 * 价格
+            bool isShortPosition = position.size.toInt() < 0; // 做空记为负数
             IAmm.Dir dir = isShortPosition ? IAmm.Dir.REMOVE_FROM_AMM : IAmm.Dir.ADD_TO_AMM;
             if (_pnlCalcOption == PnlCalcOption.TWAP) {
+                // 时间加权平均价格 time-weighted average price
                 positionNotional = _amm.getOutputTwap(dir, positionSizeAbs);
             } else if (_pnlCalcOption == PnlCalcOption.SPOT_PRICE) {
                 positionNotional = _amm.getOutputPrice(dir, positionSizeAbs);
@@ -852,7 +866,7 @@ contract ClearingHouse is
                 Decimal.decimal memory oraclePrice = _amm.getUnderlyingPrice();
                 positionNotional = positionSizeAbs.mulD(oraclePrice);
             }
-            // unrealizedPnlForLongPosition = positionNotional - openNotional
+            // unrealizedPnlForLongPosition = positionNotional - openNotional 多仓未实现盈亏 = 仓位价值 - 开仓价值
             // unrealizedPnlForShortPosition = positionNotionalWhenBorrowed - positionNotionalWhenReturned =
             // openNotional - positionNotional = unrealizedPnlForLongPosition * -1
             unrealizedPnl = isShortPosition
@@ -973,7 +987,7 @@ contract ClearingHouse is
         Decimal.decimal memory _baseAssetAmountLimit,
         bool _canOverFluctuationLimit
     ) internal returns (PositionResp memory) {
-        Decimal.decimal memory openNotional = _quoteAssetAmount.mulD(_leverage);
+        Decimal.decimal memory openNotional = _quoteAssetAmount.mulD(_leverage); // 杠杆倍数 * 本金 = 可用资金
         (Decimal.decimal memory oldPositionNotional, SignedDecimal.signedDecimal memory unrealizedPnl) =
             getPositionNotionalAndUnrealizedPnl(_amm, _trader, PnlCalcOption.SPOT_PRICE);
         PositionResp memory positionResp;
@@ -1134,6 +1148,7 @@ contract ClearingHouse is
         SignedDecimal.signedDecimal memory outputAmount =
             MixedDecimal.fromDecimal(_amm.swapInput(dir, _inputAmount, _minOutputAmount, _canOverFluctuationLimit));
         if (IAmm.Dir.REMOVE_FROM_AMM == dir) {
+            // 如果是做空，那么 base 数额是负数
             return outputAmount.mulScalar(-1);
         }
         return outputAmount;
@@ -1180,7 +1195,7 @@ contract ClearingHouse is
         if (totalTokenBalance.toUint() < _amount.toUint()) {
             Decimal.decimal memory balanceShortage = _amount.subD(totalTokenBalance);
             prepaidBadDebt[address(_token)] = prepaidBadDebt[address(_token)].addD(balanceShortage);
-            insuranceFund.withdraw(_token, balanceShortage);
+            insuranceFund.withdraw(_token, balanceShortage); // 从保险基金转账到 cleanHouse 合约
         }
 
         _transfer(_token, _receiver, _amount);
@@ -1234,10 +1249,12 @@ contract ClearingHouse is
     //
 
     function adjustPositionForLiquidityChanged(IAmm _amm, address _trader) internal returns (Position memory) {
+        // 获取某个用户地址流动性改变之后的仓位
         Position memory unadjustedPosition = getUnadjustedPosition(_amm, _trader);
         if (unadjustedPosition.size.toInt() == 0) {
             return unadjustedPosition;
         }
+        // 确认 K 值是否发生了变化，无变化，那么仓位就不需要调整
         uint256 latestLiquidityIndex = _amm.getLiquidityHistoryLength().sub(1);
         if (unadjustedPosition.liquidityHistoryIndex == latestLiquidityIndex) {
             return unadjustedPosition;
@@ -1256,6 +1273,7 @@ contract ClearingHouse is
         return adjustedPosition;
     }
 
+    // calcPositionAfterLiquidityMigration 计算流动性改变之后的仓位
     function calcPositionAfterLiquidityMigration(
         IAmm _amm,
         Position memory _position,
@@ -1269,6 +1287,7 @@ contract ClearingHouse is
         // notionalDelta = current cumulative notional - cumulative notional of last snapshot
         IAmm.LiquidityChangedSnapshot memory lastSnapshot =
             _amm.getLiquidityChangedSnapshots(_position.liquidityHistoryIndex);
+        // Delta 金融术语，又称对冲值，指的是衡量标的资产价格变动时，期权价格的变化幅度 。
         SignedDecimal.signedDecimal memory notionalDelta =
             _amm.getCumulativeNotional().subD(lastSnapshot.cumulativeNotional);
         // update the old curve's reserve
@@ -1276,6 +1295,7 @@ contract ClearingHouse is
         Decimal.decimal memory updatedOldBaseReserve;
         Decimal.decimal memory updatedOldQuoteReserve;
         if (notionalDelta.toInt() != 0) {
+            // 计算不同阶段金额差额 可以 swap 出多少仓位
             Decimal.decimal memory baseAssetWorth =
                 _amm.getInputPriceWithReserves(
                     notionalDelta.toInt() > 0 ? IAmm.Dir.ADD_TO_AMM : IAmm.Dir.REMOVE_FROM_AMM,
@@ -1303,6 +1323,7 @@ contract ClearingHouse is
         return _position;
     }
 
+    // 计算资金支付后的剩余保证金， 返回值当中 remainMargin，badDebt 肯定有一个为0， badDebt 不为 0 说明 剩余保证金为负数，即保证金不足以支付资金费
     function calcRemainMarginWithFundingPayment(
         IAmm _amm,
         Position memory _oldPosition,
@@ -1320,12 +1341,13 @@ contract ClearingHouse is
         // calculate funding payment
         latestCumulativePremiumFraction = getLatestCumulativePremiumFraction(_amm);
         if (_oldPosition.size.toInt() != 0) {
+            // latestCumulativePremiumFraction 是总共的资金费率，减去上次记录的资金费率，就是应该支付的
             fundingPayment = latestCumulativePremiumFraction
                 .subD(_oldPosition.lastUpdatedCumulativePremiumFraction)
                 .mulD(_oldPosition.size);
         }
 
-        // calculate remain margin
+        // calculate remain margin 保证金 - 资金费 - 需要提取的保证金
         SignedDecimal.signedDecimal memory signedRemainMargin =
             _marginDelta.subD(fundingPayment).addD(_oldPosition.margin);
 
