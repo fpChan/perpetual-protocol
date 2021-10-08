@@ -21,10 +21,10 @@ const HDWalletProvider = require("@truffle/hdwallet-provider")
 module.exports = {
     networks: {
         localhost: {
-            url: LOCALHOST_URL,
+            provider: () => new HDWalletProvider(ROPSTEN_MNEMONIC, LOCALHOST_URL),
             gas: GAS,
             gasPrice: GAS_PRICE,
-            networkId: "*",
+            networkId: 1234,
         },
         ropsten: {
             provider: () => new HDWalletProvider(ROPSTEN_MNEMONIC, ROPSTEN_URL),

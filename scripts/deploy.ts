@@ -17,6 +17,8 @@ export async function deploy(stage: Stage, options?: ExecOptions): Promise<void>
     }
     const nextMigration = settings.getSystemDeploySettings().nextMigration
 
+    console.log(`nextMigration is ${JSON.stringify(nextMigration,null,2)}`)
+
     const basePath = path.join(__dirname, "../publish/migrations")
     const filenames = await readdir(basePath)
     for (const filename of filenames) {
@@ -30,6 +32,7 @@ export async function deploy(stage: Stage, options?: ExecOptions): Promise<void>
 
         console.info(`Start migration: ${filename}`)
         const network = settings.getNetwork(layer)
+        console.log(`file ${filename}, network is ${network}`)
         const configPathParam = configPath ? `--config ${configPath}` : ""
         const cmd = `hardhat --network ${network} ${configPathParam} ${TASK_MIGRATE} ${stage} ${migrationPath}`
         await asyncExec(cmd, options)

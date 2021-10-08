@@ -4,7 +4,7 @@
       "contracts": {
         "RootBridge": {
           "name": "RootBridge",
-          "address": "0x1e5433845880780B10e6570f2EEdB0826709C4Ae"
+          "address": "0xA882ea5a2A287404365feD449D68201E7efaEfcB"
         },
         "ChainlinkL1": {
           "name": "ChainlinkL1",
@@ -140,7 +140,7 @@
         }
       },
       "accounts": [],
-      "network": "xdai",
+      "network": "sokol",
       "externalContracts": {
         "foundationGovernance": "0x44883405Eb9826448d3E8eCC25889C5941E79d9b",
         "arbitrageur": "0x68dfc526037E9030c8F813D014919CC89E7d4d74",

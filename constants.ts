@@ -1,14 +1,16 @@
 import dotenv from "dotenv"
 import { join, resolve } from "path"
+dotenv.config()
 dotenv.config({ path: resolve(__dirname, "..", "..", ".env") })
 
 export const ROOT_DIR = __dirname
 export const SRC_DIR_NAME = "src"
 const LEGACY_SRC_DIR_NAME = join(SRC_DIR_NAME, "legacy")
+// const MNEMONIC = "exercise broccoli length patch grape emerge spawn seek announce acquire sister actress" // 0x555555c2DF9667fD8A479453C9F70F3C9f6Df977
 
 export const COVERAGE_URL = "http://127.0.0.1:8555"
 export const LOCALHOST_URL = "http://127.0.0.1:8545"
-export const ROPSTEN_URL = `${process.env["WEB3_ENDPOINT"]}`
+export const ROPSTEN_URL = `${process.env["WEB3_ROPSTEN_ENDPOINT"]}`
 export const KOVAN_URL = `${process.env["WEB3_KOVAN_ENDPOINT"]}`
 export const RINKEBY_URL = `${process.env["WEB3_RINKEBY_ENDPOINT"]}`
 export const HOMESTEAD_URL = `${process.env["WEB3_HOMESTEAD_ENDPOINT"]}`

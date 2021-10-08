@@ -19,6 +19,7 @@ import {
     HOMESTEAD_URL,
     KOVAN_MNEMONIC,
     KOVAN_URL,
+    LOCALHOST_URL,
     RINKEBY_MNEMONIC,
     RINKEBY_URL,
     ROOT_DIR,
@@ -102,6 +103,13 @@ const config: HardhatUserConfig = {
         },
         rinkeby: {
             url: RINKEBY_URL,
+            gasPrice: GAS_PRICE,
+            accounts: {
+                mnemonic: RINKEBY_MNEMONIC,
+            },
+        },
+        localhost: {
+            url: LOCALHOST_URL,
             gasPrice: GAS_PRICE,
             accounts: {
                 mnemonic: RINKEBY_MNEMONIC,
